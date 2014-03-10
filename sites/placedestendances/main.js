@@ -5,16 +5,97 @@ var SKU = require('../../lib/SKU');
 var db = require('mongodb');
 var URL = require('url');
 
-var skuCallback = function(crawler, url, err, data, context) {
+var imageCallback = function(task, url, err, data) {
+  console.log('[Image Task] | saving images ' + data);
 
+  var sku = task.context.item;
+
+  try {
+    sku.localPhotos = JSON.parse(data);
+  }catch(e) {
+    console.error(e);
+  }
+
+  console.log('[Image Task] | complete SKU: ' + sku);
+
+  task.finish();
+}
+
+var skuCallback = function(task, url, err, data) {
+  if (err != null ) {
+    console.log(err.message);
+    task.finish();
+    return;
+  }
+
+  var context = task.context;
+  var sku = context.item;
+
+  // start analysing the page
+  var $ = cheerio.load(data);
+
+  var link = url;
+  var marque = $('h2#marque a').text();
+  var name = $('#blocAchat h1').text();
+  var price = $('.price span.px_boutique').text();
+  var currency = 'euro';
+  var size = [];
+  $('.size .label').each(function(i, e){
+    size.push($(this).text());
+  });
+
+  var description = '';
+  $('.desc .contents li').each(function(i, e){
+    description += $(this).text() + '\n';
+  });
+
+  var originalImages = [];
+
+  $('#slider img').each(function(i, e){
+    var originLink = $(this).attr('src');
+
+    var i = originLink.lastIndexOf('.');
+    var ext = (i < 0) ? '' : originLink.substr(i);
+
+    var prefix = originLink.substring(0, originLink.length - ext.length);
+    var j = prefix.lastIndexOf('.');
+    var prefix = prefix.substring(0, j);
+
+    originalImages.push(prefix + ext);
+  });
+
+//  console.log('[SKU Task] | SKU | marque: ' + marque
+//    + '; name: ' + name
+//    + '; price: ' + price
+//    + '; size:' + size
+//    + '; description: ' + description
+//    + '; original images: ' + originalImages);
+
+  // create a image task
+  var newTask = new Task(task.crawler, {
+    'url' : 'http://localhost:1337',
+    'method' : 'post',
+    'body' : JSON.stringify(originalImages),
+    'context' : {'item' : sku},
+    'callback' : imageCallback
+  });
+  console.log('[SKU task] | New image task | ' + link);
+  task.crawler.push(newTask);
+
+
+  task.finish();
 }
 
 
-var categoryCallback = function(crawler, url, err, data, context) {
+var categoryCallback = function(task, url, err, data) {
   if (err != null ) {
     console.log(err.message);
+    task.finish();
     return;
   }
+
+  var crawler = task.crawler;
+  var context = task.context;
 
   // get variable from the context
   var page = context.page;
@@ -27,28 +108,22 @@ var categoryCallback = function(crawler, url, err, data, context) {
     filterId = null;
   }
 
-  var category = context.category;
-  if (category == null || typeof(category) == 'undefined'){
-    category = 'default';
-  }
-
-  var brand = context.brand;
-  if (brand == null || typeof(brand) == 'undefined'){
-    console.error('No brand information for category url: ' + url);
-    return;
-  }
+  var sku = context.item;
 
   // start analysing the page
   var $ = cheerio.load(data);
   var count = 0;
   $('.item').each(function(i, e){
-    console.log('===> SKU');
-    var title = $(e).attr(title);
     var link = $('a', this).attr('href');
-    var image = $('img', this).attr('src');
-    var price = $('.px_actuel', this).text();
 
-    console.log(price);
+    var newTask = new Task(crawler, {
+      'url' : link,
+      context : {'item': sku.clone(), 'dynamicpage': false},
+      callback : skuCallback
+    })
+
+    console.log('[Category task] | New SKU task | ' + link);
+    crawler.push(newTask);
 
     count++;
   });
@@ -57,26 +132,32 @@ var categoryCallback = function(crawler, url, err, data, context) {
   if (count != 0) {
     var urlObj = URL.parse(url, true);
     var newUrl = 'http://' + urlObj.host + urlObj.pathname + '#pgc=' + (page + 1) + ((filterId == null) ? '' : '&cat=' + filterId);
-    var newTask = new Task( {
+    var newTask = new Task( crawler, {
       url : newUrl,
-      context : {'brand' : brand, 'category':category, 'async': true, 'page' : page+1, 'filterId': filterId},
+      context : {'item': sku.clone(), 'dynamicpage': true, 'page' : page+1, 'filterId': filterId},
       callback : categoryCallback
     });
 
-    console.log('[Category task] | New category task for next page ' + (page+1) + ' | ' + category + ' @ ' + brand + ': ' + newUrl);
+    console.log('[Category task] | New category task for next page ' + (page+1) + ' | ' + sku.category + ' @ ' + sku.marque + ': ' + newUrl);
     crawler.push(newTask);
   } else {
     console.log('[Category task] | No item found ');
   }
+
+  task.finish();
 }
 
-var marqueCallback = function(crawler, url, err, data, context) {
+var marqueCallback = function(task, url, err, data) {
   if (err != null ) {
     console.error(err.message);
+    task.finish();
     return;
   }
 
-  var brand = context.brand;
+  var crawler = task.crawler;
+  var context = task.context;
+
+  var sku = context.item;
 
   var $ = cheerio.load(data);
 
@@ -96,36 +177,44 @@ var marqueCallback = function(crawler, url, err, data, context) {
         newUrl += '#pgc=1&cat=' + filterId;
       }
 
-      var newTask = new Task( {
-        url : newUrl,
-        context : {'brand' : brand, 'category':category, 'async': true, 'page' : 1, 'filterId' : filterId},
-        callback : categoryCallback
+      sku.category = category;
+      var newTask = new Task( crawler, {
+        'url' : newUrl,
+        'context' : {'item': sku.clone(), 'dynamicpage': true, 'page' : 1, 'filterId' : filterId},
+        'callback' : categoryCallback
       });
 
-      console.log('[Marque task] | New category task | ' + category + ' @ ' + brand + ': ' + newUrl);
+      console.log('[Marque task] | New category task | ' + category + ' @ ' + sku.marque + ': ' + newUrl);
       crawler.push(newTask);
     });
   });
 
   // if there is no category, create a task to crawl this page directly
   if (categoryCount==0){
-    var newTask = new Task( {
+    sku.category = 'default';
+    var newTask = new Task( crawler, {
       'url' : url,
-      context : {'brand' : brand, 'category': 'default', 'async': true, 'page' : 1},
-      callback : categoryCallback
+      'context' : {'item' : sku.clone(), 'dynamicpage': true, 'page' : 1},
+      'callback' : categoryCallback
     });
-    console.log('[Marque task] | New category task | ' +  'default@' + brand + ': ' + url);
+    console.log('[Marque task] | New category task | ' +  'default@' + sku.marque + ': ' + url);
     crawler.push(newTask);
   }
+
+  task.finish();
 }
 
 
-var mainCallback = function (crawler, url, error, data, context) {
+var mainCallback = function (task, url, error, data) {
 	if (error != null ) {
 		console.error(error.message);
+    task.finish();
 		return;
-	} 
-	
+	}
+
+  var crawler = task.crawler;
+  var context = task.context;
+
 	var $ = cheerio.load(data);
 	
 	$('.marque').each(function(i, e) {
@@ -141,26 +230,33 @@ var mainCallback = function (crawler, url, error, data, context) {
 			if (link.substring(0, 4) != 'http') {
 				// TODO: append root to the link
 			} 
-			
+
+      var sku = new SKU();  // this sku is only a template
+      sku.marque = marque;
 			// create a new task and put in queue
-			var newTask = new Task( {
-			  url : newLink,
-        context : {'brand' : marque},
-        callback : marqueCallback
-});
+			var newTask = new Task(crawler, {
+			  'url' : newLink,
+        'context' : {'item' : sku.clone()},
+        'callback' : marqueCallback
+      });
 
-crawler.push(newTask);
-}
-});
+      crawler.push(newTask);
+    }
+  });
+
+  // must call finish when the task is done
+  task.finish();
 }
 
-var mainTask = new Task({
-	url : 'http://www.placedestendances.com/les-marques,1',
-	context : {},
-	callback : mainCallback
-});
+function init(crawler){
+  return new Task(crawler, {
+    'url' : 'http://www.placedestendances.com/les-marques,1',
+    'context' : {},
+    'callback' : mainCallback
+  });
+}
 
 // export the main task only
-module.exports = mainTask;
+module.exports = init;
 
 

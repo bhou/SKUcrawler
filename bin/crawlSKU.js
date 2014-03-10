@@ -12,7 +12,7 @@ var files = fs.readdirSync(config.home + '/sites');
 for ( var i = 0; i < files.length; i++ ) {
 	if ( fs.statSync( config.home + '/sites/' + files[i] ).isDirectory() ) {
 		console.log('[MAIN] | add site "' + files[i] + '" to the task queue');
-		var task = require('../sites/'+files[i]+'/main');
+		var task = require('../sites/'+files[i]+'/main')(crawler);
 		crawler.push(task);
 	}
 }
