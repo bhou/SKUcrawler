@@ -2,28 +2,120 @@
 var Task = require('../../lib/Task');
 var cheerio = require('cheerio');
 var SKU = require('../../lib/SKU');
-var db = require('mongodb');
 var URL = require('url');
+var siteConfig = require('./config');
+var DBUtils = require('./DBUtils');
+var moment = require('moment');
+
+var Logger = require('../../lib/Logger');
+var logger = new Logger('PlaceDesTendances');
+
+var saveSKU = function(sku) {
+  var logger = new Logger('Save SKU');
+  logger.info('processing :' + sku.toString());
+  var dbUtils = new DBUtils(siteConfig.uri);
+
+  dbUtils.run(function(db){
+    var collection = db.collection(siteConfig.collection);
+    collection.find(
+    {
+      'link' : sku.link,
+      'name' : sku.name,
+      'category' : sku.category,
+      'marque' : sku.marque
+    }, {'_id' : 1}).nextObject(function(err, doc){
+
+      if (err != null) {
+        logger.error(err.message);
+        db.close();
+        throw err;
+      }
+
+      if (doc == null) {
+        // create one
+        logger.debug('create sku');
+        sku._id = dbUtils.newID();
+        collection.insert(sku, function(err, doc) {
+          if (err != null) {
+            logger.error(err.message);
+            db.close();
+            throw err;
+          }
+          logger.debug('finish creating sku');
+          db.close();
+        });
+      } else {
+        logger.debug('update sku');
+        // update it
+        collection.update(
+          {
+            'link' : sku.link,
+            'name' : sku.name,
+            'category' : sku.category,
+            'marque' : sku.marque
+          },
+          {
+            $set: {
+              price: sku.price,
+              currency : sku.currency,
+              link : sku.link,
+              description : sku.description,
+              date : moment().format('LLLL'),
+              size : sku.size,
+              colors : sku.colors,
+              originalPhotos : sku.originalPhotos,
+              localPhotos : sku.localPhotos
+            }
+          },
+          {multi: true}, function(err) {
+            if (err) {
+              logger.error(err.message);
+            } else {
+              logger.debug('successfully updated');
+            }
+
+            db.close();
+          }
+        );
+      }
+
+    });
+
+  });
+}
 
 var imageCallback = function(task, url, err, data) {
-  console.log('[Image Task] | saving images ' + data);
+  var logger = new Logger('Image Task');
+  logger.info('processing :' + url);
 
   var sku = task.context.item;
 
   try {
-    sku.localPhotos = JSON.parse(data);
+    var localPhotos = JSON.parse(data);
+
+    sku.localPhotos = [];
+    for (var key in localPhotos) {
+      if (localPhotos.hasOwnProperty(key)) {
+        sku.localPhotos.push(localPhotos[key]);
+      }
+    }
   }catch(e) {
-    console.error(e);
+    logger.error(e.message);
+    task.finish();
+    return;
   }
 
-  console.log('[Image Task] | complete SKU: ' + sku);
+  logger.debug('ready to save SKU');
+  saveSKU(sku);
 
   task.finish();
 }
 
 var skuCallback = function(task, url, err, data) {
+  var logger = new Logger('SKU Task');
+  logger.info('processing :' + url);
   if (err != null ) {
-    console.log(err.message);
+    logger.error(err.message);
     task.finish();
     return;
   }
@@ -38,6 +130,14 @@ var skuCallback = function(task, url, err, data) {
   var marque = $('h2#marque a').text();
   var name = $('#blocAchat h1').text();
   var price = $('.price span.px_boutique').text();
+  if (price != null) {
+    try {
+      price = parseFloat(
+        price.substring(0, price.length - ' €'.length).replace(/,/g, '.'));
+    } catch(e){
+      logger.error(e.message);
+    }
+  }
   var currency = 'euro';
   var size = [];
   $('.size .label').each(function(i, e){
@@ -51,6 +151,7 @@ var skuCallback = function(task, url, err, data) {
 
   var originalImages = [];
 
+  var count = 0;
   $('#slider img').each(function(i, e){
     var originLink = $(this).attr('src');
 
@@ -62,24 +163,29 @@ var skuCallback = function(task, url, err, data) {
     var prefix = prefix.substring(0, j);
 
     originalImages.push(prefix + ext);
+    count++;
   });
 
-//  console.log('[SKU Task] | SKU | marque: ' + marque
-//    + '; name: ' + name
-//    + '; price: ' + price
-//    + '; size:' + size
-//    + '; description: ' + description
-//    + '; original images: ' + originalImages);
+  sku.link = link;
+  sku.marque = marque;
+  sku.name = name;
+  sku.price = price;
+  sku.currency = currency;
+  sku.size = size;
+  sku.description = description;
+  sku.originalPhotos = originalImages;
+
+  logger.notice('Found ' + count + " images for item '" + sku.name + "' in category '" + sku.category + "' for marque '" + sku.marque + "'");
 
   // create a image task
   var newTask = new Task(task.crawler, {
-    'url' : 'http://localhost:1337',
+    'url' : siteConfig.imageserver,
     'method' : 'post',
     'body' : JSON.stringify(originalImages),
     'context' : {'item' : sku},
     'callback' : imageCallback
   });
-  console.log('[SKU task] | New image task | ' + link);
+  logger.debug('New image task | ' + link);
   task.crawler.push(newTask);
 
 
@@ -88,8 +194,10 @@ var skuCallback = function(task, url, err, data) {
 
 
 var categoryCallback = function(task, url, err, data) {
+  var logger = new Logger('Category Task');
+  logger.info('processing :' + url);
   if (err != null ) {
-    console.log(err.message);
+    logger.error(err.message);
     task.finish();
     return;
   }
@@ -118,16 +226,17 @@ var categoryCallback = function(task, url, err, data) {
 
     var newTask = new Task(crawler, {
       'url' : link,
-      context : {'item': sku.clone(), 'dynamicpage': false},
+      context : {'item': sku.clone(), 'dynamicpage': true},
       callback : skuCallback
     })
 
-    console.log('[Category task] | New SKU task | ' + link);
+    logger.debug('New SKU task | ' + link);
     crawler.push(newTask);
 
     count++;
   });
 
+  logger.notice('Found ' + count + " items in category '" + sku.category + "' for marque '" + sku.marque + "'");
   // try next page
   if (count != 0) {
     var urlObj = URL.parse(url, true);
@@ -138,18 +247,20 @@ var categoryCallback = function(task, url, err, data) {
       callback : categoryCallback
     });
 
-    console.log('[Category task] | New category task for next page ' + (page+1) + ' | ' + sku.category + ' @ ' + sku.marque + ': ' + newUrl);
+    logger.debug('New category task for next page ' + (page+1) + ' | ' + sku.category + ' @ ' + sku.marque + ': ' + newUrl);
     crawler.push(newTask);
   } else {
-    console.log('[Category task] | No item found ');
+    logger.debug('No item found ');
   }
 
   task.finish();
 }
 
 var marqueCallback = function(task, url, err, data) {
+  var logger = new Logger('Marque Task');
+  logger.info('processing :' + url);
   if (err != null ) {
-    console.error(err.message);
+    logger.error(err.message);
     task.finish();
     return;
   }
@@ -184,10 +295,12 @@ var marqueCallback = function(task, url, err, data) {
         'callback' : categoryCallback
       });
 
-      console.log('[Marque task] | New category task | ' + category + ' @ ' + sku.marque + ': ' + newUrl);
+      logger.debug('New category task | ' + category + ' @ ' + sku.marque + ': ' + newUrl);
       crawler.push(newTask);
     });
   });
+
+  logger.notice('Found ' + categoryCount + " categories for marque '" + sku.marque + "'");
 
   // if there is no category, create a task to crawl this page directly
   if (categoryCount==0){
@@ -197,7 +310,7 @@ var marqueCallback = function(task, url, err, data) {
       'context' : {'item' : sku.clone(), 'dynamicpage': true, 'page' : 1},
       'callback' : categoryCallback
     });
-    console.log('[Marque task] | New category task | ' +  'default@' + sku.marque + ': ' + url);
+    logger.debug('New category task | ' +  'default@' + sku.marque + ': ' + url);
     crawler.push(newTask);
   }
 
@@ -206,8 +319,11 @@ var marqueCallback = function(task, url, err, data) {
 
 
 var mainCallback = function (task, url, error, data) {
+  var logger = new Logger('Main Task');
+  logger.info('processing :' + url);
+
 	if (error != null ) {
-		console.error(error.message);
+		logger.error(error.message);
     task.finish();
 		return;
 	}
@@ -216,11 +332,12 @@ var mainCallback = function (task, url, error, data) {
   var context = task.context;
 
 	var $ = cheerio.load(data);
-	
+
+  var count = 0;
 	$('.marque').each(function(i, e) {
-    if (i > 2){
-      return;
-    }
+//    if (i > 2){
+//      return;
+//    }
 
 		var marque = $('a', this).text();
 		var link = $('a', this).attr('href');
@@ -241,19 +358,33 @@ var mainCallback = function (task, url, error, data) {
       });
 
       crawler.push(newTask);
+
+      count++;
     }
   });
+
+  logger.notice('Found ' + count + ' marques');
 
   // must call finish when the task is done
   task.finish();
 }
 
 function init(crawler){
-  return new Task(crawler, {
+  var task = new Task(crawler, {
     'url' : 'http://www.placedestendances.com/les-marques,1',
     'context' : {},
     'callback' : mainCallback
   });
+
+  crawler.push(task);
+
+  return {
+    "imageCallback" : imageCallback,
+    "skuCallback" : skuCallback,
+    "categoryCallback" : categoryCallback,
+    "marqueCallback" : marqueCallback,
+    "mainCallback" : mainCallback
+  }
 }
 
 // export the main task only
