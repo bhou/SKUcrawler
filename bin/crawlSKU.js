@@ -6,6 +6,10 @@ var logger = new Logger('Main');
 
 var crawler = new Crawler();
 
+process.once('uncaughtException', function(err) {
+  logger.error(err.stack);
+});
+
 // load all the sites tasks from the sites folder
 logger.info('loading sites from: ' + config.home);
 var files = fs.readdirSync(config.home + '/sites');

@@ -100,15 +100,13 @@ var imageCallback = function(task, url, err, data) {
       }
     }
   }catch(e) {
-    logger.error(e.message);
-    task.finish();
-    return;
+    logger.error(e.message + ' data:' + data);
   }
 
   logger.debug('ready to save SKU');
   saveSKU(sku);
 
-  task.finish();
+  task.done();
 }
 
 var skuCallback = function(task, url, err, data) {
@@ -116,7 +114,7 @@ var skuCallback = function(task, url, err, data) {
   logger.info('processing :' + url);
   if (err != null ) {
     logger.error(err.message);
-    task.finish();
+    task.error(err);
     return;
   }
 
@@ -187,9 +185,10 @@ var skuCallback = function(task, url, err, data) {
   });
   logger.debug('New image task | ' + link);
   task.crawler.push(newTask);
+  newTask = null;
 
 
-  task.finish();
+  task.done();
 }
 
 
@@ -198,7 +197,7 @@ var categoryCallback = function(task, url, err, data) {
   logger.info('processing :' + url);
   if (err != null ) {
     logger.error(err.message);
-    task.finish();
+    task.error(err);
     return;
   }
 
@@ -228,11 +227,11 @@ var categoryCallback = function(task, url, err, data) {
       'url' : link,
       context : {'item': sku.clone(), 'dynamicpage': true},
       callback : skuCallback
-    })
+    });
 
     logger.debug('New SKU task | ' + link);
     crawler.push(newTask);
-
+    newTask = null;
     count++;
   });
 
@@ -249,11 +248,12 @@ var categoryCallback = function(task, url, err, data) {
 
     logger.debug('New category task for next page ' + (page+1) + ' | ' + sku.category + ' @ ' + sku.marque + ': ' + newUrl);
     crawler.push(newTask);
+    newTask = null;
   } else {
     logger.debug('No item found ');
   }
 
-  task.finish();
+  task.done();
 }
 
 var marqueCallback = function(task, url, err, data) {
@@ -261,7 +261,7 @@ var marqueCallback = function(task, url, err, data) {
   logger.info('processing :' + url);
   if (err != null ) {
     logger.error(err.message);
-    task.finish();
+    task.error(err);
     return;
   }
 
@@ -297,6 +297,8 @@ var marqueCallback = function(task, url, err, data) {
 
       logger.debug('New category task | ' + category + ' @ ' + sku.marque + ': ' + newUrl);
       crawler.push(newTask);
+      newTask = null;
+
     });
   });
 
@@ -312,9 +314,10 @@ var marqueCallback = function(task, url, err, data) {
     });
     logger.debug('New category task | ' +  'default@' + sku.marque + ': ' + url);
     crawler.push(newTask);
+    newTask = null;
   }
 
-  task.finish();
+  task.done();
 }
 
 
@@ -324,7 +327,7 @@ var mainCallback = function (task, url, error, data) {
 
 	if (error != null ) {
 		logger.error(error.message);
-    task.finish();
+    task.error(error);
 		return;
 	}
 
@@ -359,6 +362,8 @@ var mainCallback = function (task, url, error, data) {
 
       crawler.push(newTask);
 
+      newTask = null;
+
       count++;
     }
   });
@@ -366,7 +371,7 @@ var mainCallback = function (task, url, error, data) {
   logger.notice('Found ' + count + ' marques');
 
   // must call finish when the task is done
-  task.finish();
+  task.done();
 }
 
 function init(crawler){
@@ -377,6 +382,8 @@ function init(crawler){
   });
 
   crawler.push(task);
+
+  task = null;
 
   return {
     "imageCallback" : imageCallback,
